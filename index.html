@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.9 — adds Thu/Fri/Sat wedding set-up task days, a print/send schedule button, and a simple password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.10. Events now carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. The step 9 set-up schedule now covers the full Monday-Sunday week (was Thu/Fri/Sat). Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.9</title>
+<title>BLOM Client Pipeline v8.10</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -139,7 +139,7 @@
   .addeventview.show{display:block;}
   .eventform{background:#fff;border:1px solid var(--hairline);border-radius:3px;padding:20px 24px;margin-bottom:22px;}
   .eventform-title{font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:600;color:var(--charcoal);margin-bottom:14px;}
-  .eventform-row{display:grid;grid-template-columns:1.3fr 1fr auto;gap:10px;margin-bottom:10px;align-items:center;}
+  .eventform-row{display:grid;grid-template-columns:1.1fr .9fr 1fr auto;gap:10px;margin-bottom:10px;align-items:center;}
   .eventform-row input{border:1px solid var(--hairline);border-radius:2px;padding:9px 11px;font-family:'Montserrat',sans-serif;font-size:12.5px;background:#fff;color:var(--charcoal);width:100%;}
   .eventlist-title{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--cerise);font-weight:500;margin:26px 0 10px;}
   .eventitem{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px dashed var(--hairline);gap:10px;}
@@ -175,6 +175,8 @@
   .gate-box button:hover{background:#a94f63;}
   .gate-error{color:var(--cerise);font-size:11.5px;margin-top:10px;min-height:14px;}
   .gate-hidden{display:none !important;}
+
+  .badge.event-tag{background:var(--sage);}
 </style>
 </head>
 <body>
@@ -201,7 +203,7 @@
       <button class="addbtn green" id="addEventTopBtn">+ Add event</button>
     </div>
   </div>
-  <div class="subtitle">Sorted by wedding date &middot; tap a step to move a couple along</div>
+  <div class="subtitle">Sorted by date &middot; tap a step to move a couple or event along</div>
 
   <div class="viewtoggle">
     <button id="listViewBtn" class="active">List view</button>
@@ -218,7 +220,7 @@
   <div id="addEventView" class="addeventview"></div>
 
   <div id="cards" class="cards"></div>
-  <div class="footer-note">Step 8 holds a link to your cost sheet. Step 9 opens a task list for the day. Each step also keeps its own note &mdash; jot something down and it stays attached to that step. Everything saves automatically.</div>
+  <div class="footer-note">Step 8 holds a link to your cost sheet. Step 9 opens a Monday&ndash;Sunday set-up schedule. Weddings and events both move through the same 10 steps and appear together in List view, Calendar overview and the Shortlist. Each step also keeps its own note &mdash; jot something down and it stays attached to that step. Everything saves automatically.</div>
 </div>
 
 <script>
@@ -244,7 +246,7 @@ const NEXT_ACTIONS = [
   "Book decor and floral suppliers in advance, now that the mock-up is set.",
   "Revise final quantities once guest count is confirmed, then send the final invoice.",
   "Confirm supplier deliveries — check the cost sheet linked below.",
-  "Assign staff tasks and timings for the day — use the task list below.",
+  "Assign staff tasks and timings across the set-up week — use the schedule below.",
   "Collect hire items, invoice any extras, and send a review request."
 ];
 
@@ -278,8 +280,8 @@ const sheetStorage = {
   }
 };
 
-const DATA_VERSION = 6;
-const TASK_DAYS = ['Thursday', 'Friday', 'Saturday'];
+const DATA_VERSION = 7;
+const TASK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const WEDDINGS_CAL_ID = "a8b0f4fd962bc04ce9389eb6a09117ab9259063970f00537460a7cfb4e2b76ff@group.calendar.google.com";
 const MOCKUPS_CAL_ID = "358c3713f27de7be2087530f50e2808dd78019ad4323143d2866e1b562244f96@group.calendar.google.com";
 const ENQUIRIES_LABEL = "Blom Enquiries"; // Gmail label where Formspree enquiry emails arrive
@@ -309,6 +311,15 @@ const SEED = [
 let clients = [];
 let events = [];
 
+// Full weekday name (matching TASK_DAYS) that a date string falls on.
+function dayNameFromDate(dateStr){
+  if(!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00");
+  if(isNaN(d)) return null;
+  const names = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  return names[d.getDay()];
+}
+
 function patchLegacy(list){
   const estie = list.find(c => c.id === 'estie');
   if(estie){ estie.weddingDate = '2026-12-12'; estie.venue = 'Pepper Tree'; estie.notes = 'Confirmed date 12 Dec 2026 at Pepper Tree.'; }
@@ -336,13 +347,33 @@ function patchLegacy(list){
       c.taskDays = { Thursday: [], Friday: [], Saturday: (c.tasks && c.tasks.length) ? c.tasks.slice() : [] };
     }
     TASK_DAYS.forEach(d => { if(!Array.isArray(c.taskDays[d])) c.taskDays[d] = []; });
-    if(c.activeTaskDay === undefined || TASK_DAYS.indexOf(c.activeTaskDay) === -1) c.activeTaskDay = 'Saturday';
+    if(c.activeTaskDay === undefined || TASK_DAYS.indexOf(c.activeTaskDay) === -1) c.activeTaskDay = dayNameFromDate(c.weddingDate) || 'Saturday';
     if(c.mockupSet === undefined) c.mockupSet = false;
     if(c.mockupDate === undefined) c.mockupDate = "";
     if(c.stageNotes === undefined){
       c.stageNotes = {};
       if(c.notes){ c.stageNotes[c.stage] = c.notes; }
     }
+  });
+  return list;
+}
+
+// v8.10 — events (added via "+ Add event") now carry the same pipeline
+// fields as brides (venue, stage, stage notes, cost sheet, set-up
+// schedule) so they can appear in List view and the Shortlist too.
+// Idempotent: fills in only what's missing.
+function normaliseEvents(list){
+  if(!Array.isArray(list)) return [];
+  list.forEach(e => {
+    if(e.venue === undefined) e.venue = "Venue TBC";
+    if(e.stage === undefined) e.stage = 1;
+    if(e.stageNotes === undefined) e.stageNotes = {};
+    if(e.costSheetUrl === undefined) e.costSheetUrl = "";
+    if(e.taskDays === undefined) e.taskDays = {};
+    TASK_DAYS.forEach(d => { if(!Array.isArray(e.taskDays[d])) e.taskDays[d] = []; });
+    if(e.activeTaskDay === undefined || TASK_DAYS.indexOf(e.activeTaskDay) === -1) e.activeTaskDay = dayNameFromDate(e.date) || 'Saturday';
+    if(e.mockupSet === undefined) e.mockupSet = false;
+    if(e.mockupDate === undefined) e.mockupDate = "";
   });
   return list;
 }
@@ -379,6 +410,7 @@ async function load(){
     events = [];
   }
   if(!events) events = [];
+  events = normaliseEvents(events);
 
   render();
   setSyncStatus('Up to date. New enquiries are added automatically by the background watcher — tap Refresh to pull the latest.');
@@ -414,9 +446,11 @@ async function refreshFromStorage(){
     const eres = await sheetStorage.get('blom-events');
     events = eres && eres.value ? JSON.parse(eres.value) : [];
     if(!events) events = [];
+    events = normaliseEvents(events);
 
     render();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
+    if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
     const stage1 = clients.filter(c => c.stage === 1).length;
     setSyncStatus('Up to date. ' + clients.length + ' clients on the board' +
       (stage1 ? ' (' + stage1 + ' at Initial contact)' : '') +
@@ -443,8 +477,9 @@ function normaliseWatcherRecords(list){
     c.stage = c.stage || 1;
     c.costSheetUrl = c.costSheetUrl || "";
     c.tasks = c.tasks || [];
-    c.taskDays = c.taskDays || { Thursday: [], Friday: [], Saturday: [] };
-    c.activeTaskDay = c.activeTaskDay || 'Saturday';
+    c.taskDays = c.taskDays || {};
+    TASK_DAYS.forEach(d => { if(!Array.isArray(c.taskDays[d])) c.taskDays[d] = []; });
+    c.activeTaskDay = c.activeTaskDay || dayNameFromDate(c.weddingDate) || 'Saturday';
     c.mockupSet = false;
     c.mockupDate = "";
     const bits = [];
@@ -564,19 +599,21 @@ function addDays(dateStr, n){
   return d.toISOString().slice(0,10).replace(/-/g,'');
 }
 
-function buildGcalLink(c){
-  if(!c.mockupDate) return '<a class="gcal disabled" href="#">Set a date first</a>';
-  const start = c.mockupDate.replace(/-/g,'');
-  const end = addDays(c.mockupDate, 1);
-  const title = encodeURIComponent(`Mock-up: ${c.name}${c.groom ? ' & ' + c.groom : ''} (${c.venue})`);
-  const details = encodeURIComponent(`Mock-up table date for ${c.name}'s wedding at ${c.venue}.`);
-  const location = encodeURIComponent(c.venue || '');
+function buildGcalLink(en){
+  if(!en.mockupDate) return '<a class="gcal disabled" href="#">Set a date first</a>';
+  const start = en.mockupDate.replace(/-/g,'');
+  const end = addDays(en.mockupDate, 1);
+  const title = encodeURIComponent(`Mock-up: ${en.name}${en.groom ? ' & ' + en.groom : ''} (${en.venue})`);
+  const details = encodeURIComponent(en.kind === 'event'
+    ? `Mock-up table date for ${en.name} at ${en.venue}.`
+    : `Mock-up table date for ${en.name}'s wedding at ${en.venue}.`);
+  const location = encodeURIComponent(en.venue || '');
   return `<a class="gcal" target="_blank" rel="noopener" href="https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}&location=${location}">Add to Google Calendar</a>`;
 }
 
-function printTaskSchedule(client){
+function printSchedule(en){
   const dayBlocks = TASK_DAYS.map(day => {
-    const rows = (client.taskDays && client.taskDays[day]) || [];
+    const rows = (en.taskDays && en.taskDays[day]) || [];
     const rowsHtml = rows.length
       ? rows.map(t => `<tr><td>${(t.staff||'').replace(/</g,'&lt;')}</td><td>${(t.task||'').replace(/</g,'&lt;')}</td><td>${(t.time||'').replace(/</g,'&lt;')}</td></tr>`).join('')
       : '<tr><td colspan="3" class="empty-row">No tasks listed</td></tr>';
@@ -585,8 +622,10 @@ function printTaskSchedule(client){
 
   const win = window.open('', '_blank');
   if(!win){ alert('Please allow pop-ups to print or send the schedule.'); return; }
+  const scheduleLabel = en.kind === 'event' ? 'Event Set-up Schedule' : 'Wedding Set-up Schedule';
+  const dateLabel = en.kind === 'event' ? 'Event date: ' : 'Wedding day: ';
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
-    <title>${client.name} — Wedding Set-up Schedule</title>
+    <title>${en.name} — ${scheduleLabel}</title>
     <style>
       body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#2a2a2a;}
       h1{font-size:20px;margin:0 0 4px;}
@@ -598,8 +637,8 @@ function printTaskSchedule(client){
       .empty-row{color:#999;font-style:italic;}
       @media print{ body{padding:0;} }
     </style></head><body>
-    <h1>${client.name}${client.groom ? ' &amp; ' + client.groom : ''} — Wedding Set-up Schedule</h1>
-    <div class="sub">${(client.venue||'').replace(/</g,'&lt;')} &middot; Wedding day: ${formatDate(client.weddingDate)}</div>
+    <h1>${en.name}${en.groom ? ' &amp; ' + en.groom : ''} — ${scheduleLabel}</h1>
+    <div class="sub">${(en.venue||'').replace(/</g,'&lt;')} &middot; ${dateLabel}${formatDate(en.dateStr)}</div>
     ${dayBlocks}
   </body></html>`);
   win.document.close();
@@ -607,113 +646,142 @@ function printTaskSchedule(client){
   win.print();
 }
 
+function buildEntries(){
+  const clientEntries = clients.map(c => ({
+    kind: 'client', id: c.id, name: c.name, groom: c.groom || '', venue: c.venue,
+    dateStr: c.weddingDate, stage: c.stage, stageNotes: c.stageNotes || {},
+    costSheetUrl: c.costSheetUrl || '', taskDays: c.taskDays || {}, activeTaskDay: c.activeTaskDay || 'Saturday',
+    mockupSet: c.mockupSet || false, mockupDate: c.mockupDate || ''
+  }));
+  const eventEntries = events.map(e => ({
+    kind: 'event', id: e.id, name: e.title, groom: '', venue: e.venue || 'Venue TBC',
+    dateStr: e.date, stage: e.stage || 1, stageNotes: e.stageNotes || {},
+    costSheetUrl: e.costSheetUrl || '', taskDays: e.taskDays || {}, activeTaskDay: e.activeTaskDay || 'Saturday',
+    mockupSet: e.mockupSet || false, mockupDate: e.mockupDate || ''
+  }));
+  return clientEntries.concat(eventEntries);
+}
+
+function getRaw(kind, id){
+  return kind === 'client' ? clients.find(c => c.id === id) : events.find(e => e.id === id);
+}
+
+function persist(kind){
+  return kind === 'client' ? save() : saveEvents();
+}
+
 function render(){
   const container = document.getElementById('cards');
-  const upcoming = clients
-    .filter(c => daysUntil(c.weddingDate) >= 0)
-    .sort((a,b) => new Date(a.weddingDate) - new Date(b.weddingDate));
+  const upcoming = buildEntries()
+    .filter(en => daysUntil(en.dateStr) >= 0)
+    .sort((a,b) => new Date(a.dateStr) - new Date(b.dateStr));
 
   if(upcoming.length === 0){
-    container.innerHTML = '<div class="empty">No upcoming weddings on the board yet.<br>Add a bride to start tracking.</div>';
+    container.innerHTML = '<div class="empty">No upcoming weddings or events on the board yet.<br>Add a bride or event to start tracking.</div>';
     return;
   }
 
-  container.innerHTML = upcoming.map(c => {
-    const dleft = daysUntil(c.weddingDate);
+  container.innerHTML = upcoming.map(en => {
+    const dleft = daysUntil(en.dateStr);
     const soon = dleft <= 14;
-    const fillPct = ((c.stage - 1) / (STAGES.length - 1)) * 100;
+    const fillPct = ((en.stage - 1) / (STAGES.length - 1)) * 100;
     const blooms = STAGES.map((label, i) => {
       const step = i + 1;
-      const cls = step === c.stage ? 'bloom current' : (step < c.stage ? 'bloom done' : 'bloom');
-      return `<div class="${cls}" data-id="${c.id}" data-stage="${step}" title="${label}">${step}</div>`;
+      const cls = step === en.stage ? 'bloom current' : (step < en.stage ? 'bloom done' : 'bloom');
+      return `<div class="${cls}" data-id="${en.id}" data-kind="${en.kind}" data-stage="${step}" title="${label}">${step}</div>`;
     }).join('');
 
-    const mockPanel = c.stage === 6 ? `
+    const mockPanel = en.stage === 6 ? `
       <div class="panel" data-panel="mockup">
         <div class="panel-title">Mock-up table</div>
         <div class="mockrow">
-          <label class="chk"><input type="checkbox" data-field="mockupSet" data-id="${c.id}" ${c.mockupSet ? 'checked' : ''}> Date set</label>
-          <input type="date" data-field="mockupDate" data-id="${c.id}" value="${c.mockupDate || ''}">
-          ${buildGcalLink(c)}
+          <label class="chk"><input type="checkbox" data-field="mockupSet" data-id="${en.id}" data-kind="${en.kind}" ${en.mockupSet ? 'checked' : ''}> Date set</label>
+          <input type="date" data-field="mockupDate" data-id="${en.id}" data-kind="${en.kind}" value="${en.mockupDate || ''}">
+          ${buildGcalLink(en)}
         </div>
         <div class="mockhint">Opens a pre-filled Google Calendar event you can save with one click. I only have Calendar connected, not Tasks — tell me in chat if you'd like it added as an actual event instead.</div>
       </div>` : '';
 
-    const costPanel = c.stage === 8 ? `
+    const costPanel = en.stage === 8 ? `
       <div class="panel" data-panel="cost">
         <div class="panel-title">Cost sheet</div>
         <div class="costrow">
-          <input type="text" data-field="costSheetUrl" data-id="${c.id}" placeholder="Paste this wedding's cost sheet link..." value="${(c.costSheetUrl || '').replace(/"/g,'&quot;')}">
-          <a href="${c.costSheetUrl || DEFAULT_COST_SHEET}" target="_blank" rel="noopener">Open</a>
+          <input type="text" data-field="costSheetUrl" data-id="${en.id}" data-kind="${en.kind}" placeholder="Paste this ${en.kind === 'event' ? "event's" : "wedding's"} cost sheet link..." value="${(en.costSheetUrl || '').replace(/"/g,'&quot;')}">
+          <a href="${en.costSheetUrl || DEFAULT_COST_SHEET}" target="_blank" rel="noopener">Open</a>
         </div>
       </div>` : '';
 
-    const activeTaskDay = TASK_DAYS.indexOf(c.activeTaskDay) !== -1 ? c.activeTaskDay : 'Saturday';
+    const activeTaskDay = TASK_DAYS.indexOf(en.activeTaskDay) !== -1 ? en.activeTaskDay : 'Saturday';
     const dayTabs = TASK_DAYS.map(d => {
-      const count = ((c.taskDays && c.taskDays[d]) || []).length;
-      return `<button class="daytab ${d === activeTaskDay ? 'active' : ''}" data-daytab="${d}" data-id="${c.id}">${d}${count ? ' (' + count + ')' : ''}</button>`;
+      const count = ((en.taskDays && en.taskDays[d]) || []).length;
+      return `<button class="daytab ${d === activeTaskDay ? 'active' : ''}" data-daytab="${d}" data-id="${en.id}" data-kind="${en.kind}">${d}${count ? ' (' + count + ')' : ''}</button>`;
     }).join('');
-    const dayTasks = (c.taskDays && c.taskDays[activeTaskDay]) || [];
+    const dayTasks = (en.taskDays && en.taskDays[activeTaskDay]) || [];
     const taskRows = dayTasks.map((t, idx) => `
-      <div class="taskrow" data-taskday="${activeTaskDay}" data-taskidx="${idx}" data-id="${c.id}">
+      <div class="taskrow" data-taskday="${activeTaskDay}" data-taskidx="${idx}" data-id="${en.id}" data-kind="${en.kind}">
         <input type="text" data-tfield="staff" placeholder="Staff name" value="${(t.staff||'').replace(/"/g,'&quot;')}">
         <input type="text" data-tfield="task" placeholder="Task" value="${(t.task||'').replace(/"/g,'&quot;')}">
         <input type="text" data-tfield="time" placeholder="Time" value="${(t.time||'').replace(/"/g,'&quot;')}">
-        <button class="rmrow" data-rmtask="${idx}" data-day="${activeTaskDay}" data-id="${c.id}" aria-label="Remove row">&times;</button>
+        <button class="rmrow" data-rmtask="${idx}" data-day="${activeTaskDay}" data-id="${en.id}" data-kind="${en.kind}" aria-label="Remove row">&times;</button>
       </div>`).join('');
 
-    const taskPanel = c.stage === 9 ? `
+    const taskPanel = en.stage === 9 ? `
       <div class="panel" data-panel="tasks">
-        <div class="panel-title">Wedding set-up schedule</div>
+        <div class="panel-title">${en.kind === 'event' ? 'Event' : 'Wedding'} set-up schedule — Monday to Sunday</div>
         <div class="daytabs">${dayTabs}</div>
         ${taskRows || '<div class="taskempty">No tasks yet for ' + activeTaskDay + '.</div>'}
         <div class="taskpanel-actions">
-          <button class="addrow" data-addtask="${activeTaskDay}" data-id="${c.id}">+ Add task</button>
-          <button class="printsched" data-printsched="${c.id}">Print / send all 3 days</button>
+          <button class="addrow" data-addtask="${activeTaskDay}" data-id="${en.id}" data-kind="${en.kind}">+ Add task</button>
+          <button class="printsched" data-printsched="${en.id}" data-kind="${en.kind}">Print / send the week</button>
         </div>
       </div>` : '';
 
-    const earlierEntries = Object.keys(c.stageNotes || {})
+    const earlierEntries = Object.keys(en.stageNotes || {})
       .map(k => parseInt(k))
-      .filter(k => k !== c.stage && c.stageNotes[k] && c.stageNotes[k].trim())
+      .filter(k => k !== en.stage && en.stageNotes[k] && en.stageNotes[k].trim())
       .sort((a,b) => a - b);
     const earlierList = earlierEntries.map(k => `
-      <div class="earlier-item"><strong>${k}. ${STAGES[k-1]}:</strong> ${(c.stageNotes[k] || '').replace(/</g,'&lt;')}</div>
+      <div class="earlier-item"><strong>${k}. ${STAGES[k-1]}:</strong> ${(en.stageNotes[k] || '').replace(/</g,'&lt;')}</div>
     `).join('');
     const earlierBlock = earlierEntries.length ? `
-      <span class="earlier-toggle" data-toggle="${c.id}" data-count="${earlierEntries.length}">Show earlier notes (${earlierEntries.length})</span>
-      <div class="earlier-list" data-list="${c.id}">${earlierList}</div>` : '';
+      <span class="earlier-toggle" data-toggle="${en.id}" data-count="${earlierEntries.length}">Show earlier notes (${earlierEntries.length})</span>
+      <div class="earlier-list" data-list="${en.id}">${earlierList}</div>` : '';
+
+    const nameRow = en.kind === 'client' ? `
+              <span class="cname" contenteditable="true" data-field="name" data-id="${en.id}" data-kind="${en.kind}">${en.name}</span>
+              <span class="amp">&amp;</span>
+              <span class="gname" contenteditable="true" data-field="groom" data-id="${en.id}" data-kind="${en.kind}" data-placeholder="Groom's name">${en.groom || ''}</span>` : `
+              <span class="cname" contenteditable="true" data-field="name" data-id="${en.id}" data-kind="${en.kind}">${en.name}</span>
+              <span class="badge event-tag">Event</span>`;
 
     return `
-      <div class="card" data-cardid="${c.id}">
+      <div class="card" data-cardid="${en.id}" data-kind="${en.kind}">
         <div class="card-top">
           <div>
             <div class="name-row">
-              <span class="cname" contenteditable="true" data-field="name" data-id="${c.id}">${c.name}</span>
-              <span class="amp">&amp;</span>
-              <span class="gname" contenteditable="true" data-field="groom" data-id="${c.id}" data-placeholder="Groom's name">${c.groom || ''}</span>
+              ${nameRow}
               <span class="badge ${soon ? 'soon' : ''}">${dleft} day${dleft === 1 ? '' : 's'} to go</span>
             </div>
             <div class="meta">
-              <span contenteditable="true" data-field="venue" data-id="${c.id}">${c.venue}</span>
+              <span contenteditable="true" data-field="venue" data-id="${en.id}" data-kind="${en.kind}">${en.venue}</span>
               &nbsp;&middot;&nbsp;
-              <input type="date" class="weddate-input" data-field="weddingDate" data-id="${c.id}" value="${c.weddingDate}">
+              <input type="date" class="weddate-input" data-field="weddingDate" data-id="${en.id}" data-kind="${en.kind}" value="${en.dateStr}">
             </div>
           </div>
-          <button class="delbtn" data-del="${c.id}" aria-label="Remove client">&times;</button>
+          <button class="delbtn" data-del="${en.id}" data-kind="${en.kind}" aria-label="Remove">&times;</button>
         </div>
         <div class="stem">
           <div class="stemline"></div>
           <div class="stemline-fill" style="width:${fillPct}%"></div>
           <div class="blooms">${blooms}</div>
         </div>
-        <div class="stagelabel">${c.stage}. ${STAGES[c.stage - 1]}</div>
-        <div class="nextup"><strong>Next up:</strong> ${NEXT_ACTIONS[c.stage - 1]}</div>
+        <div class="stagelabel">${en.stage}. ${STAGES[en.stage - 1]}</div>
+        <div class="nextup"><strong>Next up:</strong> ${NEXT_ACTIONS[en.stage - 1]}</div>
         ${mockPanel}
         ${costPanel}
         ${taskPanel}
-        <div class="notes-label">Note — Step ${c.stage}: ${STAGES[c.stage - 1]}</div>
-        <textarea class="notes" data-stagenote="${c.stage}" data-id="${c.id}" placeholder="Write a note for this step...">${(c.stageNotes && c.stageNotes[c.stage]) || ''}</textarea>
+        <div class="notes-label">Note — Step ${en.stage}: ${STAGES[en.stage - 1]}</div>
+        <textarea class="notes" data-stagenote="${en.stage}" data-id="${en.id}" data-kind="${en.kind}" placeholder="Write a note for this step...">${(en.stageNotes && en.stageNotes[en.stage]) || ''}</textarea>
         ${earlierBlock}
       </div>
     `;
@@ -722,27 +790,33 @@ function render(){
   container.querySelectorAll('.bloom').forEach(b => {
     b.addEventListener('click', () => {
       const id = b.getAttribute('data-id');
+      const kind = b.getAttribute('data-kind');
       const stage = parseInt(b.getAttribute('data-stage'));
-      const client = clients.find(c => c.id === id);
-      if(client){ client.stage = stage; save(); render(); }
+      const obj = getRaw(kind, id);
+      if(obj){ obj.stage = stage; persist(kind); render(); }
     });
   });
 
   container.querySelectorAll('[contenteditable]').forEach(el => {
     el.addEventListener('blur', () => {
       const id = el.getAttribute('data-id');
+      const kind = el.getAttribute('data-kind');
       const field = el.getAttribute('data-field');
-      const client = clients.find(c => c.id === id);
-      if(client){ client[field] = el.textContent.trim(); save(); }
+      const obj = getRaw(kind, id);
+      if(!obj) return;
+      const actualField = (kind === 'event' && field === 'name') ? 'title' : field;
+      obj[actualField] = el.textContent.trim();
+      persist(kind);
     });
   });
 
   container.querySelectorAll('.notes').forEach(el => {
     el.addEventListener('blur', () => {
       const id = el.getAttribute('data-id');
+      const kind = el.getAttribute('data-kind');
       const stage = parseInt(el.getAttribute('data-stagenote'));
-      const client = clients.find(c => c.id === id);
-      if(client){ client.stageNotes = client.stageNotes || {}; client.stageNotes[stage] = el.value; save(); }
+      const obj = getRaw(kind, id);
+      if(obj){ obj.stageNotes = obj.stageNotes || {}; obj.stageNotes[stage] = el.value; persist(kind); }
     });
   });
 
@@ -759,54 +833,63 @@ function render(){
   container.querySelectorAll('[data-field="weddingDate"]').forEach(el => {
     el.addEventListener('change', () => {
       const id = el.getAttribute('data-id');
-      const client = clients.find(c => c.id === id);
-      if(client && el.value){ client.weddingDate = el.value; save(); render(); }
+      const kind = el.getAttribute('data-kind');
+      const obj = getRaw(kind, id);
+      if(obj && el.value){
+        if(kind === 'event'){ obj.date = el.value; } else { obj.weddingDate = el.value; }
+        persist(kind); render();
+      }
     });
   });
 
   container.querySelectorAll('[data-field="mockupSet"]').forEach(el => {
     el.addEventListener('change', () => {
       const id = el.getAttribute('data-id');
-      const client = clients.find(c => c.id === id);
-      if(client){ client.mockupSet = el.checked; save(); }
+      const kind = el.getAttribute('data-kind');
+      const obj = getRaw(kind, id);
+      if(obj){ obj.mockupSet = el.checked; persist(kind); }
     });
   });
 
   container.querySelectorAll('[data-field="mockupDate"]').forEach(el => {
     el.addEventListener('change', () => {
       const id = el.getAttribute('data-id');
-      const client = clients.find(c => c.id === id);
-      if(client){ client.mockupDate = el.value; save(); render(); }
+      const kind = el.getAttribute('data-kind');
+      const obj = getRaw(kind, id);
+      if(obj){ obj.mockupDate = el.value; persist(kind); render(); }
     });
   });
 
   container.querySelectorAll('[data-field="costSheetUrl"]').forEach(el => {
     el.addEventListener('blur', () => {
       const id = el.getAttribute('data-id');
-      const client = clients.find(c => c.id === id);
-      if(client){ client.costSheetUrl = el.value.trim(); save(); render(); }
+      const kind = el.getAttribute('data-kind');
+      const obj = getRaw(kind, id);
+      if(obj){ obj.costSheetUrl = el.value.trim(); persist(kind); render(); }
     });
   });
 
   container.querySelectorAll('[data-daytab]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-id');
+      const kind = el.getAttribute('data-kind');
       const day = el.getAttribute('data-daytab');
-      const client = clients.find(c => c.id === id);
-      if(client){ client.activeTaskDay = day; save(); render(); }
+      const obj = getRaw(kind, id);
+      if(obj){ obj.activeTaskDay = day; persist(kind); render(); }
     });
   });
 
   container.querySelectorAll('[data-addtask]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-id');
+      const kind = el.getAttribute('data-kind');
       const day = el.getAttribute('data-addtask');
-      const client = clients.find(c => c.id === id);
-      if(client){
-        client.taskDays = client.taskDays || { Thursday: [], Friday: [], Saturday: [] };
-        client.taskDays[day] = client.taskDays[day] || [];
-        client.taskDays[day].push({staff:'', task:'', time:''});
-        save(); render();
+      const obj = getRaw(kind, id);
+      if(obj){
+        obj.taskDays = obj.taskDays || {};
+        obj.taskDays[day] = obj.taskDays[day] || [];
+        obj.taskDays[day].push({staff:'', task:'', time:''});
+        persist(kind); render();
       }
     });
   });
@@ -814,10 +897,11 @@ function render(){
   container.querySelectorAll('[data-rmtask]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-id');
+      const kind = el.getAttribute('data-kind');
       const day = el.getAttribute('data-day');
       const idx = parseInt(el.getAttribute('data-rmtask'));
-      const client = clients.find(c => c.id === id);
-      if(client && client.taskDays && client.taskDays[day]){ client.taskDays[day].splice(idx, 1); save(); render(); }
+      const obj = getRaw(kind, id);
+      if(obj && obj.taskDays && obj.taskDays[day]){ obj.taskDays[day].splice(idx, 1); persist(kind); render(); }
     });
   });
 
@@ -825,13 +909,14 @@ function render(){
     el.addEventListener('blur', () => {
       const row = el.closest('.taskrow');
       const id = row.getAttribute('data-id');
+      const kind = row.getAttribute('data-kind');
       const day = row.getAttribute('data-taskday');
       const idx = parseInt(row.getAttribute('data-taskidx'));
       const field = el.getAttribute('data-tfield');
-      const client = clients.find(c => c.id === id);
-      if(client && client.taskDays && client.taskDays[day] && client.taskDays[day][idx]){
-        client.taskDays[day][idx][field] = el.value;
-        save();
+      const obj = getRaw(kind, id);
+      if(obj && obj.taskDays && obj.taskDays[day] && obj.taskDays[day][idx]){
+        obj.taskDays[day][idx][field] = el.value;
+        persist(kind);
       }
     });
   });
@@ -839,16 +924,23 @@ function render(){
   container.querySelectorAll('[data-printsched]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-printsched');
-      const client = clients.find(c => c.id === id);
-      if(client) printTaskSchedule(client);
+      const kind = el.getAttribute('data-kind');
+      const obj = getRaw(kind, id);
+      if(obj){
+        printSchedule(kind === 'client'
+          ? { kind, id: obj.id, name: obj.name, groom: obj.groom || '', venue: obj.venue, dateStr: obj.weddingDate, taskDays: obj.taskDays }
+          : { kind, id: obj.id, name: obj.title, groom: '', venue: obj.venue || 'Venue TBC', dateStr: obj.date, taskDays: obj.taskDays }
+        );
+      }
     });
   });
 
   container.querySelectorAll('[data-del]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-del');
-      clients = clients.filter(c => c.id !== id);
-      save();
+      const kind = el.getAttribute('data-kind');
+      if(kind === 'client'){ clients = clients.filter(c => c.id !== id); save(); }
+      else { events = events.filter(e => e.id !== id); saveEvents(); }
       render();
     });
   });
@@ -937,7 +1029,7 @@ function renderOverview(){
         ...entry.events.map(ev => `Event: ${ev.title}`)
       ];
       if(isHoliday) tipParts.push('South African public holiday');
-      const jumpSource = entry.weddings[0] || entry.mockups[0];
+      const jumpSource = entry.weddings[0] || entry.mockups[0] || entry.events[0];
       const jumpAttr = jumpSource ? ` data-jumpto="${jumpSource.id}"` : '';
       cells += `<div class="${cls}"${jumpAttr} title="${tipParts.join(' | ')}">${day}${total > 1 ? '<sup>' + total + '</sup>' : ''}</div>`;
     }
@@ -946,7 +1038,7 @@ function renderOverview(){
     const legendItems = [
       ...m.weddings.map(it => ({ day: it.day, id: it.client.id, html: `${it.day} ${monthAbbr} — ${it.client.name}${it.client.groom ? ' & ' + it.client.groom : ''} <em>(${it.client.venue})</em>` })),
       ...m.mockups.map(it => ({ day: it.day, id: it.client.id, html: `<span class="mocklabel">Mock-up</span> ${it.day} ${monthAbbr} — ${it.client.name} <em>(${it.client.venue})</em>` })),
-      ...m.events.map(it => ({ day: it.day, id: null, html: `<span class="eventlabel">Event</span> ${it.day} ${monthAbbr} — ${it.event.title}` }))
+      ...m.events.map(it => ({ day: it.day, id: it.event.id, html: `<span class="eventlabel">Event</span> ${it.day} ${monthAbbr} — ${it.event.title} <em>(${it.event.venue || 'Venue TBC'})</em>` }))
     ].sort((a,b) => a.day - b.day);
     const legend = legendItems.map(li => `<div${li.id ? ` data-jumpto="${li.id}"` : ''}>${li.html}</div>`).join('');
 
@@ -975,9 +1067,9 @@ function renderOverview(){
 
 function renderShortlist(){
   const el = document.getElementById('shortlist');
-  const upcoming = clients
-    .filter(c => daysUntil(c.weddingDate) >= 0)
-    .sort((a,b) => new Date(a.weddingDate) - new Date(b.weddingDate));
+  const upcoming = buildEntries()
+    .filter(en => daysUntil(en.dateStr) >= 0)
+    .sort((a,b) => new Date(a.dateStr) - new Date(b.dateStr));
 
   if(upcoming.length === 0){
     el.innerHTML = '<div class="empty">Nothing to show yet.</div>';
@@ -985,40 +1077,53 @@ function renderShortlist(){
   }
 
   const byStage = {};
-  upcoming.forEach(c => {
-    if(!byStage[c.stage]) byStage[c.stage] = [];
-    byStage[c.stage].push(c);
+  upcoming.forEach(en => {
+    if(!byStage[en.stage]) byStage[en.stage] = [];
+    byStage[en.stage].push(en);
   });
 
+  const clientsUpcoming = upcoming.filter(en => en.kind === 'client');
+  const eventsUpcoming = upcoming.filter(en => en.kind === 'event');
+
   const byYear = {};
-  upcoming.forEach(c => {
-    const y = c.weddingDate.slice(0,4);
+  clientsUpcoming.forEach(en => {
+    const y = en.dateStr.slice(0,4);
     byYear[y] = (byYear[y] || 0) + 1;
   });
   const yearBreakdown = Object.keys(byYear).sort().map(y =>
     `<span class="short-summary-year"><strong>${byYear[y]}</strong> in ${y}</span>`
   ).join('');
-  const upcomingEventsCount = (events || []).filter(e => e.date && daysUntil(e.date) >= 0).length;
   const summaryHtml = `
     <div class="short-summary">
-      <div class="short-summary-total">${upcoming.length} bride${upcoming.length === 1 ? '' : 's'} currently in the system</div>
+      <div class="short-summary-total">${clientsUpcoming.length} bride${clientsUpcoming.length === 1 ? '' : 's'} currently in the system</div>
       <div class="short-summary-years">${yearBreakdown}</div>
-      <div class="short-summary-events"><strong>${upcomingEventsCount}</strong> event${upcomingEventsCount === 1 ? '' : 's'} on the calendar</div>
+      <div class="short-summary-events"><strong>${eventsUpcoming.length}</strong> event${eventsUpcoming.length === 1 ? '' : 's'} on the calendar</div>
     </div>`;
 
   const groups = Object.keys(byStage).map(k => parseInt(k)).sort((a,b) => a - b).map(stage => {
-    const rows = byStage[stage].map(c => {
-      const dleft = daysUntil(c.weddingDate);
+    const stageEntries = byStage[stage];
+    const stageClients = stageEntries.filter(en => en.kind === 'client').length;
+    const stageEvents = stageEntries.filter(en => en.kind === 'event').length;
+    const countLabel = (stageClients > 0 && stageEvents > 0)
+      ? `${stageClients} bride${stageClients === 1 ? '' : 's'}, ${stageEvents} event${stageEvents === 1 ? '' : 's'}`
+      : (stageEvents > 0
+        ? `${stageEvents} event${stageEvents === 1 ? '' : 's'}`
+        : `${stageClients} bride${stageClients === 1 ? '' : 's'}`);
+    const rows = stageEntries.map(en => {
+      const dleft = daysUntil(en.dateStr);
       const soonTag = dleft <= 30 ? `<span class="soon-tag">${dleft} days!</span>` : `${dleft} days`;
+      const nameHtml = en.kind === 'client'
+        ? `${en.name}${en.groom ? ' <em>&amp; ' + en.groom + '</em>' : ''}`
+        : `${en.name} <em>(Event)</em>`;
       return `
-        <div class="short-row" data-jumpto="${c.id}">
-          <span class="short-name">${c.name}${c.groom ? ' <em>&amp; ' + c.groom + '</em>' : ''}</span>
-          <span class="short-detail">${c.venue} &middot; ${formatDate(c.weddingDate)} &middot; ${soonTag}</span>
+        <div class="short-row" data-jumpto="${en.id}">
+          <span class="short-name">${nameHtml}</span>
+          <span class="short-detail">${en.venue} &middot; ${formatDate(en.dateStr)} &middot; ${soonTag}</span>
         </div>`;
     }).join('');
     return `
       <div class="short-group">
-        <div class="short-stage">${stage}. ${STAGES[stage - 1]}<span class="count">${byStage[stage].length} bride${byStage[stage].length === 1 ? '' : 's'}</span></div>
+        <div class="short-stage">${stage}. ${STAGES[stage - 1]}<span class="count">${countLabel}</span></div>
         <div class="short-action">Next: ${NEXT_ACTIONS[stage - 1]}</div>
         ${rows}
       </div>`;
@@ -1045,7 +1150,7 @@ function renderAddEventView(){
   const rows = upcomingEvents.map(e => `
     <div class="eventitem">
       <span class="eventitem-name">${(e.title || '').replace(/</g,'&lt;')}</span>
-      <span class="eventitem-date">${formatDate(e.date)}</span>
+      <span class="eventitem-date">${e.venue ? (e.venue).replace(/</g,'&lt;') + ' &middot; ' : ''}${formatDate(e.date)}</span>
       <button class="delbtn" data-delevent="${e.id}" aria-label="Remove event">&times;</button>
     </div>`).join('');
 
@@ -1054,6 +1159,7 @@ function renderAddEventView(){
       <div class="eventform-title">Add an event</div>
       <div class="eventform-row">
         <input type="text" id="newEventTitle" placeholder="Event name">
+        <input type="text" id="newEventVenue" placeholder="Venue">
         <input type="date" id="newEventDate">
         <button class="addbtn green" id="submitEventBtn">+ Add event</button>
       </div>
@@ -1063,15 +1169,25 @@ function renderAddEventView(){
 
   document.getElementById('submitEventBtn').addEventListener('click', () => {
     const titleEl = document.getElementById('newEventTitle');
+    const venueEl = document.getElementById('newEventVenue');
     const dateEl = document.getElementById('newEventDate');
     const title = titleEl.value.trim();
+    const venue = venueEl.value.trim() || 'Venue TBC';
     const date = dateEl.value;
     if(!title || !date) return;
-    events.push({ id: 'e' + Date.now(), title, date });
+    const activeDay = dayNameFromDate(date) || 'Saturday';
+    const taskDays = {};
+    TASK_DAYS.forEach(d => { taskDays[d] = []; });
+    events.push({
+      id: 'e' + Date.now(), title, venue, date,
+      stage: 1, stageNotes: {}, costSheetUrl: '', taskDays, activeTaskDay: activeDay,
+      mockupSet: false, mockupDate: ''
+    });
     saveEvents();
     renderAddEventView();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
     if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+    render();
   });
 
   el.querySelectorAll('[data-delevent]').forEach(btn => {
@@ -1082,6 +1198,7 @@ function renderAddEventView(){
       renderAddEventView();
       if(document.getElementById('overview').classList.contains('show')) renderOverview();
       if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+      render();
     });
   });
 }
@@ -1134,18 +1251,21 @@ document.getElementById('addBtn').addEventListener('click', () => {
   const id = 'c' + Date.now();
   const newDate = new Date();
   newDate.setMonth(newDate.getMonth() + 3);
+  const weddingDate = newDate.toISOString().slice(0,10);
+  const taskDays = {};
+  TASK_DAYS.forEach(d => { taskDays[d] = []; });
   clients.push({
     id,
     name: "New bride",
     groom: "",
     venue: "Venue",
-    weddingDate: newDate.toISOString().slice(0,10),
+    weddingDate,
     stage: 1,
     notes: "",
     costSheetUrl: "",
     tasks: [],
-    taskDays: { Thursday: [], Friday: [], Saturday: [] },
-    activeTaskDay: 'Saturday'
+    taskDays,
+    activeTaskDay: dayNameFromDate(weddingDate) || 'Saturday'
   });
   save();
   render();

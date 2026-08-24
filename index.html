@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.10. Events now carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. The step 9 set-up schedule now covers the full Monday-Sunday week (was Thu/Fri/Sat). Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.11. Fixes edits reverting after close/reopen: every save used to re-upload the WHOLE clients/events list, so a concurrent Enquiry Watcher run (or another open tab) could silently overwrite your latest edit with a stale snapshot. Saves now re-fetch the current sheet data and patch in only the one record you changed (see saveClients/saveEventsMerged, v8.11 comment below) before writing, and pick up whatever the watcher just added without needing Refresh. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.10</title>
+<title>BLOM Client Pipeline v8.11</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -518,6 +518,79 @@ async function saveEvents(){
   }
 }
 
+/* v8.11 — merge-on-save.
+   A single field edit used to re-upload the ENTIRE in-memory clients/events
+   array, overwriting whatever was in the sheet at that moment. If the
+   background Enquiry Watcher trigger (or another open tab/device) wrote a
+   newer version in between your page loading and your edit saving, that
+   write got silently clobbered — the edit looked like it "didn't stick"
+   after closing and reopening. These helpers instead re-fetch the current
+   sheet contents right before saving and patch only the one record that
+   changed into that fresh copy, so a concurrent watcher run or another
+   open tab no longer erases your edit (and you also pick up whatever the
+   watcher just added, without needing to hit Refresh). */
+async function saveClients(mutate){
+  let fresh;
+  try{
+    const res = await sheetStorage.get('blom-clients');
+    fresh = res && res.value ? JSON.parse(res.value) : JSON.parse(JSON.stringify(SEED));
+    fresh = patchLegacy(normaliseWatcherRecords(fresh));
+  }catch(e){
+    console.error('saveClients: could not read latest data, merging into local copy instead', e);
+    fresh = clients;
+  }
+  clients = mutate(fresh) || fresh;
+  try{
+    await sheetStorage.set('blom-clients', JSON.stringify(clients));
+  }catch(e){
+    console.error('saveClients failed', e);
+  }
+  render();
+  if(document.getElementById('overview').classList.contains('show')) renderOverview();
+  if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+}
+
+async function saveEventsMerged(mutate){
+  let fresh;
+  try{
+    const res = await sheetStorage.get('blom-events');
+    fresh = res && res.value ? JSON.parse(res.value) : [];
+    fresh = normaliseEvents(fresh);
+  }catch(e){
+    console.error('saveEventsMerged: could not read latest data, merging into local copy instead', e);
+    fresh = events;
+  }
+  events = mutate(fresh) || fresh;
+  try{
+    await sheetStorage.set('blom-events', JSON.stringify(events));
+  }catch(e){
+    console.error('saveEventsMerged failed', e);
+  }
+  render();
+  if(document.getElementById('overview').classList.contains('show')) renderOverview();
+  if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+}
+
+function patchOneClient(id){
+  return fresh => {
+    const mine = clients.find(c => c.id === id);
+    if(!mine) return fresh;
+    const idx = fresh.findIndex(c => c.id === id);
+    if(idx >= 0) fresh[idx] = mine; else fresh.push(mine);
+    return fresh;
+  };
+}
+
+function patchOneEvent(id){
+  return fresh => {
+    const mine = events.find(e => e.id === id);
+    if(!mine) return fresh;
+    const idx = fresh.findIndex(e => e.id === id);
+    if(idx >= 0) fresh[idx] = mine; else fresh.push(mine);
+    return fresh;
+  };
+}
+
 // South African public holidays (fixed dates + Easter-based, with the
 // Monday-after rule when a holiday falls on a Sunday).
 function easterSunday(year){
@@ -666,8 +739,8 @@ function getRaw(kind, id){
   return kind === 'client' ? clients.find(c => c.id === id) : events.find(e => e.id === id);
 }
 
-function persist(kind){
-  return kind === 'client' ? save() : saveEvents();
+function persist(kind, id){
+  return kind === 'client' ? saveClients(patchOneClient(id)) : saveEventsMerged(patchOneEvent(id));
 }
 
 function render(){
@@ -793,7 +866,7 @@ function render(){
       const kind = b.getAttribute('data-kind');
       const stage = parseInt(b.getAttribute('data-stage'));
       const obj = getRaw(kind, id);
-      if(obj){ obj.stage = stage; persist(kind); render(); }
+      if(obj){ obj.stage = stage; persist(kind, id); render(); }
     });
   });
 
@@ -806,7 +879,7 @@ function render(){
       if(!obj) return;
       const actualField = (kind === 'event' && field === 'name') ? 'title' : field;
       obj[actualField] = el.textContent.trim();
-      persist(kind);
+      persist(kind, id);
     });
   });
 
@@ -816,7 +889,7 @@ function render(){
       const kind = el.getAttribute('data-kind');
       const stage = parseInt(el.getAttribute('data-stagenote'));
       const obj = getRaw(kind, id);
-      if(obj){ obj.stageNotes = obj.stageNotes || {}; obj.stageNotes[stage] = el.value; persist(kind); }
+      if(obj){ obj.stageNotes = obj.stageNotes || {}; obj.stageNotes[stage] = el.value; persist(kind, id); }
     });
   });
 
@@ -837,7 +910,7 @@ function render(){
       const obj = getRaw(kind, id);
       if(obj && el.value){
         if(kind === 'event'){ obj.date = el.value; } else { obj.weddingDate = el.value; }
-        persist(kind); render();
+        persist(kind, id); render();
       }
     });
   });
@@ -847,7 +920,7 @@ function render(){
       const id = el.getAttribute('data-id');
       const kind = el.getAttribute('data-kind');
       const obj = getRaw(kind, id);
-      if(obj){ obj.mockupSet = el.checked; persist(kind); }
+      if(obj){ obj.mockupSet = el.checked; persist(kind, id); }
     });
   });
 
@@ -856,7 +929,7 @@ function render(){
       const id = el.getAttribute('data-id');
       const kind = el.getAttribute('data-kind');
       const obj = getRaw(kind, id);
-      if(obj){ obj.mockupDate = el.value; persist(kind); render(); }
+      if(obj){ obj.mockupDate = el.value; persist(kind, id); render(); }
     });
   });
 
@@ -865,7 +938,7 @@ function render(){
       const id = el.getAttribute('data-id');
       const kind = el.getAttribute('data-kind');
       const obj = getRaw(kind, id);
-      if(obj){ obj.costSheetUrl = el.value.trim(); persist(kind); render(); }
+      if(obj){ obj.costSheetUrl = el.value.trim(); persist(kind, id); render(); }
     });
   });
 
@@ -875,7 +948,7 @@ function render(){
       const kind = el.getAttribute('data-kind');
       const day = el.getAttribute('data-daytab');
       const obj = getRaw(kind, id);
-      if(obj){ obj.activeTaskDay = day; persist(kind); render(); }
+      if(obj){ obj.activeTaskDay = day; persist(kind, id); render(); }
     });
   });
 
@@ -889,7 +962,7 @@ function render(){
         obj.taskDays = obj.taskDays || {};
         obj.taskDays[day] = obj.taskDays[day] || [];
         obj.taskDays[day].push({staff:'', task:'', time:''});
-        persist(kind); render();
+        persist(kind, id); render();
       }
     });
   });
@@ -901,7 +974,7 @@ function render(){
       const day = el.getAttribute('data-day');
       const idx = parseInt(el.getAttribute('data-rmtask'));
       const obj = getRaw(kind, id);
-      if(obj && obj.taskDays && obj.taskDays[day]){ obj.taskDays[day].splice(idx, 1); persist(kind); render(); }
+      if(obj && obj.taskDays && obj.taskDays[day]){ obj.taskDays[day].splice(idx, 1); persist(kind, id); render(); }
     });
   });
 
@@ -916,7 +989,7 @@ function render(){
       const obj = getRaw(kind, id);
       if(obj && obj.taskDays && obj.taskDays[day] && obj.taskDays[day][idx]){
         obj.taskDays[day][idx][field] = el.value;
-        persist(kind);
+        persist(kind, id);
       }
     });
   });
@@ -939,8 +1012,8 @@ function render(){
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-del');
       const kind = el.getAttribute('data-kind');
-      if(kind === 'client'){ clients = clients.filter(c => c.id !== id); save(); }
-      else { events = events.filter(e => e.id !== id); saveEvents(); }
+      if(kind === 'client'){ clients = clients.filter(c => c.id !== id); saveClients(fresh => fresh.filter(c => c.id !== id)); }
+      else { events = events.filter(e => e.id !== id); saveEventsMerged(fresh => fresh.filter(e => e.id !== id)); }
       render();
     });
   });
@@ -1178,12 +1251,13 @@ function renderAddEventView(){
     const activeDay = dayNameFromDate(date) || 'Saturday';
     const taskDays = {};
     TASK_DAYS.forEach(d => { taskDays[d] = []; });
+    const newEventId = 'e' + Date.now();
     events.push({
-      id: 'e' + Date.now(), title, venue, date,
+      id: newEventId, title, venue, date,
       stage: 1, stageNotes: {}, costSheetUrl: '', taskDays, activeTaskDay: activeDay,
       mockupSet: false, mockupDate: ''
     });
-    saveEvents();
+    saveEventsMerged(patchOneEvent(newEventId));
     renderAddEventView();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
     if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
@@ -1194,7 +1268,7 @@ function renderAddEventView(){
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-delevent');
       events = events.filter(e => e.id !== id);
-      saveEvents();
+      saveEventsMerged(fresh => fresh.filter(e => e.id !== id));
       renderAddEventView();
       if(document.getElementById('overview').classList.contains('show')) renderOverview();
       if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
@@ -1267,7 +1341,7 @@ document.getElementById('addBtn').addEventListener('click', () => {
     taskDays,
     activeTaskDay: dayNameFromDate(weddingDate) || 'Saturday'
   });
-  save();
+  saveClients(patchOneClient(id));
   render();
 });
 

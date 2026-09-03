@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.13. Fixes a data-loss race that survived v8.11: two saves fired close together (e.g. adding a bride, then editing another card) could still run their read-patch-write round trips at the same time, and whichever write landed last won outright — discarding whatever the other save had just written, including a brand-new manually-added record. Saves are now queued strictly one after another per store (clients / events), and every save does a true local-wins merge (keep every record already in memory, no matter which save triggered the round trip; only pull in genuinely new sheet-side records such as fresh watcher imports) instead of trusting only the one record it was called for. Deletions are tracked for the session so a stale concurrent fetch can't resurrect something just removed. Also holds off re-rendering the card list while a field is focused, so a save resolving mid-keystroke can no longer make text you're typing elsewhere vanish — it catches up the moment you click/tab away. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.14. Adds a visible save-status pill (top bar, next to Refresh) and a close-tab guard on top of v8.13's data-loss race fix. Autosave has always run on every edit — there was never a manual save step — but each save's round trip to the sheet takes a second or two, and closing the tab while one was still in flight could cut that request off mid-way. The pill now shows "Saving…" / "All changes saved" so you can see when it's safe to close, and the browser will warn you if you try to close or navigate away while a save is still pending. v8.13's fixes (queued per-store saves, local-wins merge, deferred render while a field is focused) are unchanged. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.13</title>
+<title>BLOM Client Pipeline v8.14</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -107,6 +107,12 @@
   .syncbar{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
   .syncstatus{font-size:11px;color:var(--charcoal-soft);letter-spacing:.02em;}
   .syncstatus.err{color:#a9432f;}
+  .savestatus{font-size:11px;letter-spacing:.02em;display:flex;align-items:center;gap:5px;}
+  .savestatus::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
+  .savestatus.saved{color:var(--sage);}
+  .savestatus.saving{color:var(--cerise);}
+  .savestatus.saving::before{animation:savepulse 1s ease-in-out infinite;}
+  @keyframes savepulse{0%,100%{opacity:1;}50%{opacity:.3;}}
   .syncbtn{font-size:11px;letter-spacing:.06em;text-transform:uppercase;border:1px dashed var(--sage);background:none;color:var(--sage);padding:6px 12px;border-radius:20px;cursor:pointer;}
   .syncbtn:hover{background:var(--sage);color:#fff;}
   .syncbtn:disabled{opacity:.5;cursor:default;}
@@ -213,6 +219,7 @@
   </div>
   <div class="syncbar">
     <span class="syncstatus" id="syncStatus">Loading...</span>
+    <span class="savestatus saved" id="saveStatus">All changes saved</span>
     <button class="syncbtn" id="syncBtn">Refresh</button>
   </div>
   <div id="overview" class="overview"></div>
@@ -339,6 +346,38 @@ let pendingRenderAfterEdit = false;
 let clientSaveChain = Promise.resolve();
 let eventSaveChain = Promise.resolve();
 const EDITABLE_SELECTOR = '[contenteditable], .notes, .taskrow input, [data-field="costSheetUrl"]';
+
+/* v8.14 — visible save status + a close-tab guard.
+   Autosave already happens on every edit; nothing here needed you to
+   press anything. The one real gap was timing: each save's round trip
+   to the sheet takes a second or two (longer if a few are queued up
+   behind each other, see v8.13 above), and closing the tab or the
+   browser while one is still in flight can cut that specific network
+   request off mid-way, losing just that change. pendingSaveCount tracks
+   how many saves (clients + events) are currently in flight; the status
+   pill reflects it, and the beforeunload guard below refuses to let the
+   tab close silently while it's non-zero. */
+let pendingSaveCount = 0;
+function updateSaveStatus(){
+  const el = document.getElementById('saveStatus');
+  if(!el) return;
+  if(pendingSaveCount > 0){
+    el.textContent = 'Saving…';
+    el.classList.remove('saved');
+    el.classList.add('saving');
+  }else{
+    el.textContent = 'All changes saved';
+    el.classList.remove('saving');
+    el.classList.add('saved');
+  }
+}
+window.addEventListener('beforeunload', e => {
+  if(pendingSaveCount > 0){
+    e.preventDefault();
+    e.returnValue = 'A change is still saving to the sheet — give it a second before closing.';
+    return e.returnValue;
+  }
+});
 
 function renderIfIdle(){
   if(editingActive){ pendingRenderAfterEdit = true; return; }
@@ -566,7 +605,12 @@ async function saveEvents(){
    open tab no longer erases your edit (and you also pick up whatever the
    watcher just added, without needing to hit Refresh). */
 function saveClients(mutate){
-  clientSaveChain = clientSaveChain.then(() => doSaveClients(mutate)).catch(e => console.error('saveClients queue error', e));
+  pendingSaveCount++;
+  updateSaveStatus();
+  clientSaveChain = clientSaveChain
+    .then(() => doSaveClients(mutate))
+    .catch(e => console.error('saveClients queue error', e))
+    .finally(() => { pendingSaveCount--; updateSaveStatus(); });
   return clientSaveChain;
 }
 
@@ -601,7 +645,12 @@ async function doSaveClients(mutate){
 }
 
 function saveEventsMerged(mutate){
-  eventSaveChain = eventSaveChain.then(() => doSaveEventsMerged(mutate)).catch(e => console.error('saveEventsMerged queue error', e));
+  pendingSaveCount++;
+  updateSaveStatus();
+  eventSaveChain = eventSaveChain
+    .then(() => doSaveEventsMerged(mutate))
+    .catch(e => console.error('saveEventsMerged queue error', e))
+    .finally(() => { pendingSaveCount--; updateSaveStatus(); });
   return eventSaveChain;
 }
 

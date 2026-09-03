@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.11. Fixes edits reverting after close/reopen: every save used to re-upload the WHOLE clients/events list, so a concurrent Enquiry Watcher run (or another open tab) could silently overwrite your latest edit with a stale snapshot. Saves now re-fetch the current sheet data and patch in only the one record you changed (see saveClients/saveEventsMerged, v8.11 comment below) before writing, and pick up whatever the watcher just added without needing Refresh. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.13. Fixes a data-loss race that survived v8.11: two saves fired close together (e.g. adding a bride, then editing another card) could still run their read-patch-write round trips at the same time, and whichever write landed last won outright — discarding whatever the other save had just written, including a brand-new manually-added record. Saves are now queued strictly one after another per store (clients / events), and every save does a true local-wins merge (keep every record already in memory, no matter which save triggered the round trip; only pull in genuinely new sheet-side records such as fresh watcher imports) instead of trusting only the one record it was called for. Deletions are tracked for the session so a stale concurrent fetch can't resurrect something just removed. Also holds off re-rendering the card list while a field is focused, so a save resolving mid-keystroke can no longer make text you're typing elsewhere vanish — it catches up the moment you click/tab away. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.11</title>
+<title>BLOM Client Pipeline v8.13</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -311,6 +311,42 @@ const SEED = [
 let clients = [];
 let events = [];
 
+/* v8.13 — same-session data-loss fixes on top of v8.11's merge-on-save.
+   Two problems remained after v8.11:
+   1) Two saves (e.g. editing bride A, then bride B, in quick succession)
+      could still run their read-patch-write round trips CONCURRENTLY.
+      Whichever write landed last won outright, so a save that started
+      before another one finished could silently erase it. Fixed by
+      chaining every save for a given store (clients / events) through a
+      queue so they run strictly one after another.
+   2) A save's merge only kept ONE record (the one it was for) from local
+      memory; every other id came from the freshly-fetched sheet copy —
+      so a second, not-yet-saved edit or a brand-new manually-added record
+      (like adding a bride) could still be discarded if a different save
+      finished first. Fixed with a true local-wins merge: every record we
+      already have in memory is kept as-is no matter which save triggered
+      the round trip; only genuinely new sheet-side records (e.g. the
+      watcher's own imports) get pulled in from the fetch.
+   Deletions are tracked for the session (deletedClientIds/deletedEventIds)
+   so a stale concurrent fetch can't resurrect something just removed.
+   Rendering the full card list while a field is focused is also now
+   deferred until you click/tab away, so a save that resolves mid-keystroke
+   can no longer make text you're typing elsewhere vanish. */
+let deletedClientIds = new Set();
+let deletedEventIds = new Set();
+let editingActive = false;
+let pendingRenderAfterEdit = false;
+let clientSaveChain = Promise.resolve();
+let eventSaveChain = Promise.resolve();
+const EDITABLE_SELECTOR = '[contenteditable], .notes, .taskrow input, [data-field="costSheetUrl"]';
+
+function renderIfIdle(){
+  if(editingActive){ pendingRenderAfterEdit = true; return; }
+  render();
+  if(document.getElementById('overview').classList.contains('show')) renderOverview();
+  if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+}
+
 // Full weekday name (matching TASK_DAYS) that a date string falls on.
 function dayNameFromDate(dateStr){
   if(!dateStr) return null;
@@ -529,7 +565,12 @@ async function saveEvents(){
    changed into that fresh copy, so a concurrent watcher run or another
    open tab no longer erases your edit (and you also pick up whatever the
    watcher just added, without needing to hit Refresh). */
-async function saveClients(mutate){
+function saveClients(mutate){
+  clientSaveChain = clientSaveChain.then(() => doSaveClients(mutate)).catch(e => console.error('saveClients queue error', e));
+  return clientSaveChain;
+}
+
+async function doSaveClients(mutate){
   let fresh;
   try{
     const res = await sheetStorage.get('blom-clients');
@@ -539,18 +580,32 @@ async function saveClients(mutate){
     console.error('saveClients: could not read latest data, merging into local copy instead', e);
     fresh = clients;
   }
-  clients = mutate(fresh) || fresh;
+  // Local-wins merge (see v8.13 note above): start from the sheet's
+  // current records, then overwrite with whatever we already have in
+  // memory for every id we know about — edited, brand-new, or just
+  // sitting there untouched — so no in-flight local change is ever
+  // dropped just because a different save's round trip finished first.
+  const byId = {};
+  fresh.forEach(c => { byId[c.id] = c; });
+  clients.forEach(c => { if(!deletedClientIds.has(c.id)) byId[c.id] = c; });
+  deletedClientIds.forEach(id => { delete byId[id]; });
+  let merged = Object.values(byId);
+  merged = (mutate && mutate(merged)) || merged;
+  clients = merged;
   try{
     await sheetStorage.set('blom-clients', JSON.stringify(clients));
   }catch(e){
     console.error('saveClients failed', e);
   }
-  render();
-  if(document.getElementById('overview').classList.contains('show')) renderOverview();
-  if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+  renderIfIdle();
 }
 
-async function saveEventsMerged(mutate){
+function saveEventsMerged(mutate){
+  eventSaveChain = eventSaveChain.then(() => doSaveEventsMerged(mutate)).catch(e => console.error('saveEventsMerged queue error', e));
+  return eventSaveChain;
+}
+
+async function doSaveEventsMerged(mutate){
   let fresh;
   try{
     const res = await sheetStorage.get('blom-events');
@@ -560,15 +615,19 @@ async function saveEventsMerged(mutate){
     console.error('saveEventsMerged: could not read latest data, merging into local copy instead', e);
     fresh = events;
   }
-  events = mutate(fresh) || fresh;
+  const byId = {};
+  fresh.forEach(e => { byId[e.id] = e; });
+  events.forEach(e => { if(!deletedEventIds.has(e.id)) byId[e.id] = e; });
+  deletedEventIds.forEach(id => { delete byId[id]; });
+  let merged = Object.values(byId);
+  merged = (mutate && mutate(merged)) || merged;
+  events = merged;
   try{
     await sheetStorage.set('blom-events', JSON.stringify(events));
   }catch(e){
     console.error('saveEventsMerged failed', e);
   }
-  render();
-  if(document.getElementById('overview').classList.contains('show')) renderOverview();
-  if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+  renderIfIdle();
 }
 
 function patchOneClient(id){
@@ -742,6 +801,27 @@ function getRaw(kind, id){
 function persist(kind, id){
   return kind === 'client' ? saveClients(patchOneClient(id)) : saveEventsMerged(patchOneEvent(id));
 }
+
+// Set up once: tracks whether an editable field is currently focused so
+// a background save's render() (fired once its round trip resolves) can
+// hold off instead of rebuilding the DOM node the user is mid-typing in.
+// render() replaces #cards' innerHTML wholesale, which would otherwise
+// blur/destroy whatever's focused.
+(function setUpEditingTracker(){
+  const container = document.getElementById('cards');
+  container.addEventListener('focusin', e => {
+    if(e.target.matches && e.target.matches(EDITABLE_SELECTOR)) editingActive = true;
+  });
+  container.addEventListener('focusout', e => {
+    if(!(e.target.matches && e.target.matches(EDITABLE_SELECTOR))) return;
+    setTimeout(() => {
+      const ae = document.activeElement;
+      if(ae && ae.matches && ae.matches(EDITABLE_SELECTOR) && container.contains(ae)) return;
+      editingActive = false;
+      if(pendingRenderAfterEdit){ pendingRenderAfterEdit = false; renderIfIdle(); }
+    }, 0);
+  });
+})();
 
 function render(){
   const container = document.getElementById('cards');
@@ -1012,8 +1092,8 @@ function render(){
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-del');
       const kind = el.getAttribute('data-kind');
-      if(kind === 'client'){ clients = clients.filter(c => c.id !== id); saveClients(fresh => fresh.filter(c => c.id !== id)); }
-      else { events = events.filter(e => e.id !== id); saveEventsMerged(fresh => fresh.filter(e => e.id !== id)); }
+      if(kind === 'client'){ deletedClientIds.add(id); clients = clients.filter(c => c.id !== id); saveClients(fresh => fresh.filter(c => c.id !== id)); }
+      else { deletedEventIds.add(id); events = events.filter(e => e.id !== id); saveEventsMerged(fresh => fresh.filter(e => e.id !== id)); }
       render();
     });
   });
@@ -1267,6 +1347,7 @@ function renderAddEventView(){
   el.querySelectorAll('[data-delevent]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-delevent');
+      deletedEventIds.add(id);
       events = events.filter(e => e.id !== id);
       saveEventsMerged(fresh => fresh.filter(e => e.id !== id));
       renderAddEventView();

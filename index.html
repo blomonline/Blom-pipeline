@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.14. Adds a visible save-status pill (top bar, next to Refresh) and a close-tab guard on top of v8.13's data-loss race fix. Autosave has always run on every edit — there was never a manual save step — but each save's round trip to the sheet takes a second or two, and closing the tab while one was still in flight could cut that request off mid-way. The pill now shows "Saving…" / "All changes saved" so you can see when it's safe to close, and the browser will warn you if you try to close or navigate away while a save is still pending. v8.13's fixes (queued per-store saves, local-wins merge, deferred render while a field is focused) are unchanged. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.16. Two workflow tweaks on top of v8.15's Archive view: (1) a newly-added bride or event now sorts to the top of List view instead of wherever its placeholder date happens to fall, and the new bride's name field is auto-focused and scrolled into view so you can start typing immediately — session-scoped, settles back into normal date order on reload. (2) The Shortlist's headline "brides currently in the system" count (and its per-year breakdown) now excludes brides still at "1. Initial contact" — they're enquiries, not confirmed bookings — and only count once moved to Step 2+; they still show in their own Step 1 group below, clearly marked as excluded, and a line in the summary says how many are waiting there. v8.13/v8.14's save fixes and v8.15's Archive view are unchanged. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.14</title>
+<title>BLOM Client Pipeline v8.16</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -160,6 +160,8 @@
   .short-summary-year{font-size:12px;color:var(--charcoal-soft);letter-spacing:.01em;}
   .short-summary-year strong{color:var(--cerise);font-weight:600;}
   .short-summary-events{font-size:12px;color:var(--charcoal-soft);letter-spacing:.01em;margin-top:6px;}
+  .short-summary-pending{font-size:11.5px;color:#a5988a;font-style:italic;margin-top:6px;}
+  .short-pending-note{font-size:10.5px;color:#a5988a;font-style:italic;margin-bottom:6px;}
   .short-summary-events strong{color:var(--cerise);font-weight:600;}
   .short-group{margin-bottom:22px;}
   .short-stage{font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;color:var(--charcoal);border-bottom:1px solid var(--blush);padding-bottom:6px;margin-bottom:8px;}
@@ -171,6 +173,17 @@
   .short-detail{font-size:11px;color:var(--charcoal-soft);white-space:nowrap;}
   .short-detail .soon-tag{color:var(--cerise);font-weight:500;}
   .short-action{width:100%;font-size:10.5px;color:#a5988a;font-style:italic;}
+  .archiveview{display:none;margin-bottom:30px;}
+  .archive-export{font-size:11px;letter-spacing:.06em;text-transform:uppercase;border:1px dashed var(--sage);background:none;color:var(--sage);padding:6px 12px;border-radius:20px;cursor:pointer;margin-top:12px;}
+  .archive-export:hover{background:var(--sage);color:#fff;}
+  .archive-group{margin-bottom:22px;}
+  .archive-year{font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;color:var(--charcoal);border-bottom:1px solid var(--blush);padding-bottom:6px;margin-bottom:8px;}
+  .archive-year .count{font-family:'Montserrat',sans-serif;font-size:10.5px;color:var(--charcoal-soft);font-weight:400;margin-left:8px;}
+  .archive-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:7px 4px;border-bottom:1px dashed var(--hairline);flex-wrap:wrap;}
+  .archive-name{font-family:'Cormorant Garamond',serif;font-size:16px;color:var(--charcoal);}
+  .archive-name em{font-style:italic;color:var(--charcoal-soft);font-size:14px;}
+  .archive-detail{font-size:11px;color:var(--charcoal-soft);white-space:nowrap;}
+  .archive-detail .incomplete-tag{color:var(--cerise);font-weight:500;}
   .gate-overlay{position:fixed;inset:0;background:var(--charcoal);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;}
   .gate-box{background:#fff;border-radius:4px;padding:40px 34px;max-width:340px;width:100%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.3);}
   .gate-box h2{font-family:'Cormorant Garamond',serif;font-size:24px;color:var(--charcoal);margin:0 0 6px;font-weight:500;}
@@ -216,6 +229,7 @@
     <button id="calViewBtn">Calendar overview</button>
     <button id="shortViewBtn">Shortlist</button>
     <button id="addEventViewBtn">Add event</button>
+    <button id="archiveViewBtn">Archive</button>
   </div>
   <div class="syncbar">
     <span class="syncstatus" id="syncStatus">Loading...</span>
@@ -225,6 +239,7 @@
   <div id="overview" class="overview"></div>
   <div id="shortlist" class="shortlist"></div>
   <div id="addEventView" class="addeventview"></div>
+  <div id="archiveView" class="archiveview"></div>
 
   <div id="cards" class="cards"></div>
   <div class="footer-note">Step 8 holds a link to your cost sheet. Step 9 opens a Monday&ndash;Sunday set-up schedule. Weddings and events both move through the same 10 steps and appear together in List view, Calendar overview and the Shortlist. Each step also keeps its own note &mdash; jot something down and it stays attached to that step. Everything saves automatically.</div>
@@ -357,6 +372,13 @@ const EDITABLE_SELECTOR = '[contenteditable], .notes, .taskrow input, [data-fiel
    how many saves (clients + events) are currently in flight; the status
    pill reflects it, and the beforeunload guard below refuses to let the
    tab close silently while it's non-zero. */
+/* v8.16 — newly-added brides/events sort to the top of List view instead
+   of wherever their (often placeholder) date happens to fall chronologically,
+   so you land straight on the card you just created instead of scrolling
+   to find it. Session-scoped only: reload the page and everything settles
+   back into normal date order. */
+let recentlyAddedIds = [];
+
 let pendingSaveCount = 0;
 function updateSaveStatus(){
   const el = document.getElementById('saveStatus');
@@ -876,7 +898,18 @@ function render(){
   const container = document.getElementById('cards');
   const upcoming = buildEntries()
     .filter(en => daysUntil(en.dateStr) >= 0)
-    .sort((a,b) => new Date(a.dateStr) - new Date(b.dateStr));
+    .sort((a,b) => {
+      // Recently-added (this session) cards float to the top, most
+      // recent first; everything else keeps its normal date order.
+      const ai = recentlyAddedIds.indexOf(a.id);
+      const bi = recentlyAddedIds.indexOf(b.id);
+      if(ai !== -1 || bi !== -1){
+        if(ai === -1) return 1;
+        if(bi === -1) return -1;
+        return ai - bi;
+      }
+      return new Date(a.dateStr) - new Date(b.dateStr);
+    });
 
   if(upcoming.length === 0){
     container.innerHTML = '<div class="empty">No upcoming weddings or events on the board yet.<br>Add a bride or event to start tracking.</div>';
@@ -1287,19 +1320,30 @@ function renderShortlist(){
   const clientsUpcoming = upcoming.filter(en => en.kind === 'client');
   const eventsUpcoming = upcoming.filter(en => en.kind === 'event');
 
+  // v8.16 — Step 1 ("Initial contact") is an enquiry, not a confirmed
+  // booking yet, so it's held out of the headline count until the bride
+  // is moved past it. She still shows up in her own "1. Initial contact"
+  // group further down — just not counted in the total above.
+  const officialClients = clientsUpcoming.filter(en => en.stage > 1);
+  const pendingClients = clientsUpcoming.filter(en => en.stage === 1);
+
   const byYear = {};
-  clientsUpcoming.forEach(en => {
+  officialClients.forEach(en => {
     const y = en.dateStr.slice(0,4);
     byYear[y] = (byYear[y] || 0) + 1;
   });
   const yearBreakdown = Object.keys(byYear).sort().map(y =>
     `<span class="short-summary-year"><strong>${byYear[y]}</strong> in ${y}</span>`
   ).join('');
+  const pendingLine = pendingClients.length
+    ? `<div class="short-summary-pending"><strong>${pendingClients.length}</strong> more still at initial contact — not counted above until moved past Step 1</div>`
+    : '';
   const summaryHtml = `
     <div class="short-summary">
-      <div class="short-summary-total">${clientsUpcoming.length} bride${clientsUpcoming.length === 1 ? '' : 's'} currently in the system</div>
+      <div class="short-summary-total">${officialClients.length} bride${officialClients.length === 1 ? '' : 's'} currently in the system</div>
       <div class="short-summary-years">${yearBreakdown}</div>
       <div class="short-summary-events"><strong>${eventsUpcoming.length}</strong> event${eventsUpcoming.length === 1 ? '' : 's'} on the calendar</div>
+      ${pendingLine}
     </div>`;
 
   const groups = Object.keys(byStage).map(k => parseInt(k)).sort((a,b) => a - b).map(stage => {
@@ -1323,9 +1367,13 @@ function renderShortlist(){
           <span class="short-detail">${en.venue} &middot; ${formatDate(en.dateStr)} &middot; ${soonTag}</span>
         </div>`;
     }).join('');
+    const pendingNote = stage === 1
+      ? `<div class="short-pending-note">Pending enquiries — excluded from the total above until moved to Step 2+</div>`
+      : '';
     return `
       <div class="short-group">
         <div class="short-stage">${stage}. ${STAGES[stage - 1]}<span class="count">${countLabel}</span></div>
+        ${pendingNote}
         <div class="short-action">Next: ${NEXT_ACTIONS[stage - 1]}</div>
         ${rows}
       </div>`;
@@ -1341,6 +1389,112 @@ function renderShortlist(){
       if(card){ card.scrollIntoView({behavior:'smooth', block:'center'}); card.style.borderColor = 'var(--cerise)'; setTimeout(() => card.style.borderColor = '', 1500); }
     });
   });
+}
+
+/* v8.15 — Archive view.
+   Nothing was ever deleted when a wedding/event's date passed — List view
+   just stops showing it (daysUntil < 0 is filtered out everywhere else).
+   This view surfaces exactly that backlog: every client/event whose date
+   has already gone by, grouped by year, with a running count and a CSV
+   export so the whole year's numbers can be pulled at once. Entirely
+   date-driven — nothing needs to be manually marked "done" for it to
+   show up here once its date passes. */
+function renderArchive(){
+  const el = document.getElementById('archiveView');
+  const past = buildEntries()
+    .filter(en => daysUntil(en.dateStr) < 0)
+    .sort((a,b) => new Date(b.dateStr) - new Date(a.dateStr));
+
+  if(past.length === 0){
+    el.innerHTML = '<div class="empty">Nothing archived yet — weddings and events show up here automatically once their date has passed.</div>';
+    return;
+  }
+
+  const pastClients = past.filter(en => en.kind === 'client');
+  const pastEvents = past.filter(en => en.kind === 'event');
+
+  const byYear = {};
+  past.forEach(en => {
+    const y = en.dateStr.slice(0,4);
+    if(!byYear[y]) byYear[y] = { clients: 0, events: 0, entries: [] };
+    if(en.kind === 'client') byYear[y].clients++; else byYear[y].events++;
+    byYear[y].entries.push(en);
+  });
+
+  const yearChips = Object.keys(byYear).sort((a,b) => b - a).map(y => {
+    const yr = byYear[y];
+    const label = (yr.clients > 0 && yr.events > 0)
+      ? `${yr.clients} wedding${yr.clients === 1 ? '' : 's'}, ${yr.events} event${yr.events === 1 ? '' : 's'}`
+      : (yr.events > 0 ? `${yr.events} event${yr.events === 1 ? '' : 's'}` : `${yr.clients} wedding${yr.clients === 1 ? '' : 's'}`);
+    return `<span class="short-summary-year"><strong>${y}</strong> — ${label}</span>`;
+  }).join('');
+
+  const summaryHtml = `
+    <div class="short-summary">
+      <div class="short-summary-total">${pastClients.length} wedding${pastClients.length === 1 ? '' : 's'} and ${pastEvents.length} event${pastEvents.length === 1 ? '' : 's'} archived so far</div>
+      <div class="short-summary-years">${yearChips}</div>
+      <button class="archive-export" id="archiveExportBtn">Export CSV</button>
+    </div>`;
+
+  const groups = Object.keys(byYear).sort((a,b) => b - a).map(y => {
+    const yr = byYear[y];
+    const rows = yr.entries.map(en => {
+      const finalStage = en.stage === STAGES.length
+        ? `${en.stage}. ${STAGES[en.stage - 1]}`
+        : `<span class="incomplete-tag">${en.stage}. ${STAGES[en.stage - 1]} — not marked complete</span>`;
+      const nameHtml = en.kind === 'client'
+        ? `${en.name}${en.groom ? ' <em>&amp; ' + en.groom + '</em>' : ''}`
+        : `${en.name} <em>(Event)</em>`;
+      return `
+        <div class="archive-row">
+          <span class="archive-name">${nameHtml}</span>
+          <span class="archive-detail">${en.venue} &middot; ${formatDate(en.dateStr)} &middot; ${finalStage}</span>
+        </div>`;
+    }).join('');
+    return `
+      <div class="archive-group">
+        <div class="archive-year">${y}<span class="count">${yr.clients} wedding${yr.clients === 1 ? '' : 's'}, ${yr.events} event${yr.events === 1 ? '' : 's'}</span></div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = summaryHtml + groups;
+
+  document.getElementById('archiveExportBtn').addEventListener('click', exportArchiveCSV);
+}
+
+function csvEscape(v){
+  const s = String(v === null || v === undefined ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function exportArchiveCSV(){
+  const past = buildEntries()
+    .filter(en => daysUntil(en.dateStr) < 0)
+    .sort((a,b) => new Date(a.dateStr) - new Date(b.dateStr));
+
+  const header = ['Year', 'Type', 'Name', 'Groom', 'Venue', 'Date', 'Final stage', 'Fully completed?'];
+  const rows = past.map(en => [
+    en.dateStr.slice(0,4),
+    en.kind === 'client' ? 'Wedding' : 'Event',
+    en.name,
+    en.kind === 'client' ? (en.groom || '') : '',
+    en.venue || '',
+    en.dateStr,
+    STAGES[en.stage - 1] || '',
+    en.stage === STAGES.length ? 'Yes' : 'No'
+  ]);
+  const csv = [header, ...rows].map(r => r.map(csvEscape).join(',')).join('\r\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `blom-archive-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderAddEventView(){
@@ -1387,6 +1541,7 @@ function renderAddEventView(){
       mockupSet: false, mockupDate: ''
     });
     saveEventsMerged(patchOneEvent(newEventId));
+    recentlyAddedIds.unshift(newEventId);
     renderAddEventView();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
     if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
@@ -1412,9 +1567,11 @@ function clearViewActiveStates(){
   document.getElementById('calViewBtn').classList.remove('active');
   document.getElementById('shortViewBtn').classList.remove('active');
   document.getElementById('addEventViewBtn').classList.remove('active');
+  document.getElementById('archiveViewBtn').classList.remove('active');
   document.getElementById('overview').classList.remove('show');
   document.getElementById('shortlist').classList.remove('show');
   document.getElementById('addEventView').classList.remove('show');
+  document.getElementById('archiveView').classList.remove('show');
   document.getElementById('cards').style.display = 'none';
 }
 
@@ -1445,11 +1602,19 @@ function showAddEventView(){
   document.getElementById('addEventViewBtn').classList.add('active');
 }
 
+function showArchiveView(){
+  clearViewActiveStates();
+  renderArchive();
+  document.getElementById('archiveView').classList.add('show');
+  document.getElementById('archiveViewBtn').classList.add('active');
+}
+
 document.getElementById('listViewBtn').addEventListener('click', showListView);
 document.getElementById('calViewBtn').addEventListener('click', showCalView);
 document.getElementById('shortViewBtn').addEventListener('click', showShortView);
 document.getElementById('addEventViewBtn').addEventListener('click', showAddEventView);
 document.getElementById('addEventTopBtn').addEventListener('click', showAddEventView);
+document.getElementById('archiveViewBtn').addEventListener('click', showArchiveView);
 
 document.getElementById('addBtn').addEventListener('click', () => {
   const id = 'c' + Date.now();
@@ -1472,7 +1637,23 @@ document.getElementById('addBtn').addEventListener('click', () => {
     activeTaskDay: dayNameFromDate(weddingDate) || 'Saturday'
   });
   saveClients(patchOneClient(id));
+  recentlyAddedIds.unshift(id);
   render();
+  const newCard = document.querySelector(`.card[data-cardid="${id}"]`);
+  if(newCard){
+    newCard.scrollIntoView({behavior:'smooth', block:'center'});
+    const nameField = newCard.querySelector('[data-field="name"]');
+    if(nameField){
+      nameField.focus();
+      try{
+        const range = document.createRange();
+        range.selectNodeContents(nameField);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }catch(e){}
+    }
+  }
 });
 
 /* ---- Simple password gate (front-door only, not real security) ---- */

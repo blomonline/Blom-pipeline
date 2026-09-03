@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- BLOM Client Pipeline v8.16. Two workflow tweaks on top of v8.15's Archive view: (1) a newly-added bride or event now sorts to the top of List view instead of wherever its placeholder date happens to fall, and the new bride's name field is auto-focused and scrolled into view so you can start typing immediately — session-scoped, settles back into normal date order on reload. (2) The Shortlist's headline "brides currently in the system" count (and its per-year breakdown) now excludes brides still at "1. Initial contact" — they're enquiries, not confirmed bookings — and only count once moved to Step 2+; they still show in their own Step 1 group below, clearly marked as excluded, and a line in the summary says how many are waiting there. v8.13/v8.14's save fixes and v8.15's Archive view are unchanged. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
+<!-- BLOM Client Pipeline v8.17. Bug fix: the Archive tab added in v8.15 never actually became visible when clicked — its container had "display:none" and, unlike Overview/Shortlist/Add event, no ".archiveview.show{display:block}" rule was ever added to reveal it, so it silently rendered nothing (the button still lit up as active, which made it look like a data problem rather than a plain CSS miss). Fixed, and while in there, Archive is now also kept live: it refreshes itself after any save, add, delete or Refresh click made while it's the open tab, matching how Overview and Shortlist already behaved (previously only re-rendered the moment you switched to it). Nothing about v8.16's List-view-top-sort or Shortlist Initial-Contact split changed. v8.13/v8.14's save fixes are unchanged. Events carry the same pipeline (venue, stage, step 9 Mon-Sun set-up schedule) as brides and appear in List view, Calendar overview and the Shortlist. Keeps the print/send schedule button and the password gate for public hosting. Automation lives in Apps Script (Enquiry Watcher v3.1 + trigger); this page reads/writes blom-clients / blom-events via the GAS web app. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BLOM Client Pipeline v8.16</title>
+<title>BLOM Client Pipeline v8.17</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pinyon+Script&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -174,6 +174,7 @@
   .short-detail .soon-tag{color:var(--cerise);font-weight:500;}
   .short-action{width:100%;font-size:10.5px;color:#a5988a;font-style:italic;}
   .archiveview{display:none;margin-bottom:30px;}
+  .archiveview.show{display:block;}
   .archive-export{font-size:11px;letter-spacing:.06em;text-transform:uppercase;border:1px dashed var(--sage);background:none;color:var(--sage);padding:6px 12px;border-radius:20px;cursor:pointer;margin-top:12px;}
   .archive-export:hover{background:var(--sage);color:#fff;}
   .archive-group{margin-bottom:22px;}
@@ -406,6 +407,7 @@ function renderIfIdle(){
   render();
   if(document.getElementById('overview').classList.contains('show')) renderOverview();
   if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+  if(document.getElementById('archiveView').classList.contains('show')) renderArchive();
 }
 
 // Full weekday name (matching TASK_DAYS) that a date string falls on.
@@ -548,6 +550,7 @@ async function refreshFromStorage(){
     render();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
     if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+    if(document.getElementById('archiveView').classList.contains('show')) renderArchive();
     const stage1 = clients.filter(c => c.stage === 1).length;
     setSyncStatus('Up to date. ' + clients.length + ' clients on the board' +
       (stage1 ? ' (' + stage1 + ' at Initial contact)' : '') +
@@ -1545,6 +1548,7 @@ function renderAddEventView(){
     renderAddEventView();
     if(document.getElementById('overview').classList.contains('show')) renderOverview();
     if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+    if(document.getElementById('archiveView').classList.contains('show')) renderArchive();
     render();
   });
 
@@ -1557,6 +1561,7 @@ function renderAddEventView(){
       renderAddEventView();
       if(document.getElementById('overview').classList.contains('show')) renderOverview();
       if(document.getElementById('shortlist').classList.contains('show')) renderShortlist();
+      if(document.getElementById('archiveView').classList.contains('show')) renderArchive();
       render();
     });
   });
